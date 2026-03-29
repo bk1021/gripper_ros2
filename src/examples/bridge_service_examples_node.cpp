@@ -6,6 +6,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
+#include "gripper_ros2/gripper_constants.hpp"
 #include "gripper_ros2/srv/get_param.hpp"
 #include "gripper_ros2/srv/set_float32.hpp"
 #include "gripper_ros2/srv/set_param.hpp"
@@ -118,7 +119,9 @@ int main(int argc, char ** argv) {
     }
 
     auto state_res = call_service<gripper_ros2::srv::SetState>(
-        node, endpoint(ns, "set_state"), [](auto & req) { req.target_state = 0; });
+        node, endpoint(ns, "set_state"), [](auto & req) {
+          req.target_state = static_cast<uint8_t>(gripper::State::IDLE);
+        });
     if (!state_res) {
       ok = false;
     } else {
@@ -170,7 +173,9 @@ int main(int argc, char ** argv) {
     }
   } else if (mode == "manual_step") {
     auto mode_res = call_service<gripper_ros2::srv::SetState>(
-        node, endpoint(ns, "set_state"), [](auto & req) { req.target_state = 7; });
+        node, endpoint(ns, "set_state"), [](auto & req) {
+          req.target_state = static_cast<uint8_t>(gripper::State::MANUAL_TUNE);
+        });
     if (!mode_res || !mode_res->success) {
       ok = false;
     }
