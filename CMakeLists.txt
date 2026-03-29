@@ -49,7 +49,53 @@ rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(gripper_ros_bridge "${cpp_typesupport_target}")
 
-install(TARGETS gripper_ros_bridge DESTINATION lib/${PROJECT_NAME})
+# Helper for small ROS2 C++ examples that depend on generated interfaces.
+function(add_bridge_example target src)
+  add_executable(${target} ${src})
+  target_include_directories(${target} PRIVATE include)
+  ament_target_dependencies(${target} ${ARGN})
+  target_link_libraries(${target} "${cpp_typesupport_target}")
+endfunction()
+
+add_bridge_example(
+  bridge_service_examples_node
+  src/examples/bridge_service_examples_node.cpp
+  rclcpp
+  std_srvs)
+
+add_bridge_example(
+  bridge_force_topic_example_node
+  src/examples/bridge_force_topic_example_node.cpp
+  rclcpp
+  std_msgs)
+
+add_bridge_example(
+  bridge_open_action_client
+  src/examples/bridge_open_action_client.cpp
+  rclcpp
+  rclcpp_action)
+
+add_bridge_example(
+  bridge_grasp_action_client
+  src/examples/bridge_grasp_action_client.cpp
+  rclcpp
+  rclcpp_action)
+
+add_bridge_example(
+  bridge_calibrate_action_client
+  src/examples/bridge_calibrate_action_client.cpp
+  rclcpp
+  rclcpp_action)
+
+install(TARGETS
+  gripper_ros_bridge
+  bridge_service_examples_node
+  bridge_force_topic_example_node
+  bridge_open_action_client
+  bridge_grasp_action_client
+  bridge_calibrate_action_client
+  DESTINATION lib/${PROJECT_NAME})
+
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 
