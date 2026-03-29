@@ -27,6 +27,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <vector>
 
 class GripperROSBridge : public rclcpp::Node {
@@ -48,8 +49,8 @@ private:
   using OpenAction = gripper_ros2::action::Open;
   using CalibAction = gripper_ros2::action::CalibrateForce;
 
-    static constexpr uint8_t kConfigParamMaxId = 22;
-    static constexpr size_t kConfigParamCount = 23;
+  static constexpr uint8_t kConfigParamMaxId = 22;
+  static constexpr size_t kConfigParamCount = 23;
   static constexpr uint8_t kOpenPosParamId = 5;
 
   static bool is_busy_state(uint8_t state);
@@ -110,6 +111,13 @@ private:
       std::shared_ptr<rclcpp_action::ServerGoalHandle<CalibAction>> gh);
 
   void publish_diagnostics();
+
+  bool verify_target_force_readback(float requested_grams,
+                                    double timeout_s,
+                                    float tolerance_grams,
+                                    const std::string& timeout_message,
+                                    const std::string& mismatch_message,
+                                    std::string& error_message);
 
   std::optional<float> request_param_sync(uint8_t id, double timeout_s = 0.5);
 

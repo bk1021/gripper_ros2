@@ -13,6 +13,15 @@ using namespace std::chrono_literals;
 
 namespace {
 
+constexpr auto kSetStateConfirmTimeout = 100ms;
+constexpr auto kSetStateConfirmPoll = 10ms;
+constexpr uint8_t kTargetForceParamId = 17;
+constexpr uint8_t kContactThresholdParamId = 14;
+constexpr uint8_t kPc3ZeroParamId = 15;
+constexpr uint8_t kPc2ZeroParamId = 16;
+constexpr double kDefaultReadbackTimeoutSec = 0.5;
+constexpr float kDefaultForceToleranceGrams = 1.0f;
+
 std::vector<uint8_t> pack_float_be(float f) {
   uint32_t raw = 0;
   std::memcpy(&raw, &f, sizeof(float));
@@ -37,6 +46,22 @@ int16_t unpack_i16_be(const uint8_t* d) {
   return static_cast<int16_t>((d[0] << 8) | d[1]);
 }
 
+std::optional<std::chrono::steady_clock::time_point> make_timeout_deadline(
+    double timeout_sec) {
+  if (timeout_sec <= 0.0) {
+    return std::nullopt;
+  }
+
+  return std::chrono::steady_clock::now() +
+         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+             std::chrono::duration<double>(timeout_sec));
+}
+
+bool deadline_reached(
+    const std::optional<std::chrono::steady_clock::time_point>& deadline) {
+  return deadline.has_value() && std::chrono::steady_clock::now() > *deadline;
+}
+
 }  // namespace
 
 GripperROSBridge::GripperROSBridge() : Node("gripper_ros_bridge") {
@@ -44,6 +69,8 @@ GripperROSBridge::GripperROSBridge() : Node("gripper_ros_bridge") {
   declare_parameter("baudrate", 921600);
   declare_parameter("rx_timeout_ms", 500);
   declare_parameter("force_rate_limit_ms", 50);
+  declare_parameter("open_timeout_sec", 10.0);
+  declare_parameter("calib_timeout_sec", 30.0);
 
   serial_.set_rx_callback([this](uint32_t id, const uint8_t* d, uint8_t len) {
     dispatch_rx(id, d, len);
@@ -353,8 +380,18 @@ void GripperROSBridge::on_set_state(
     return;
   }
 
-  res->success = true;
-  res->message = "OK";
+  const auto confirm_deadline = std::chrono::steady_clock::now() + kSetStateConfirmTimeout;
+  while (std::chrono::steady_clock::now() <= confirm_deadline) {
+    if (get_last_state() == req->target_state) {
+      res->success = true;
+      res->message = "OK";
+      return;
+    }
+    std::this_thread::sleep_for(kSetStateConfirmPoll);
+  }
+
+  res->success = false;
+  res->message = "State transition timeout (100ms)";
 }
 
 void GripperROSBridge::on_set_param(
@@ -376,7 +413,7 @@ void GripperROSBridge::on_set_param(
 
   // target_force_grams (id 17) is writable, but not via set_param.
   // Use ~/set_target_force service or ~/target_force topic instead.
-  if (req->param_id == 17) {
+  if (req->param_id == kTargetForceParamId) {
     res->success = false;
     res->message = "param_id 17 must be set via ~/set_target_force or ~/target_force";
     return;
@@ -434,6 +471,17 @@ void GripperROSBridge::on_set_force_srv(
     return;
   }
 
+  std::string verify_error;
+  if (!verify_target_force_readback(
+          req->value, kDefaultReadbackTimeoutSec, kDefaultForceToleranceGrams,
+          "Readback timeout. Target force unconfirmed",
+          "Readback mismatch. Firmware target differs by >1.0g", verify_error)) {
+    res->success = false;
+    res->message = verify_error;
+    return;
+  }
+
+  publish_live_config_snapshot();
   res->success = true;
   res->message = "OK";
 }
@@ -505,14 +553,45 @@ rclcpp_action::GoalResponse GripperROSBridge::handle_grasp_goal(
     const rclcpp_action::GoalUUID&,
     std::shared_ptr<const GraspAction::Goal> goal) {
   const auto state = get_last_state();
-  if (state == static_cast<uint8_t>(State::FAULT) ||
-      state == static_cast<uint8_t>(State::GRASPING) ||
-      state == static_cast<uint8_t>(State::ADMITTANCE_CTRL) ||
-      state == static_cast<uint8_t>(State::APPROACHING)) {
+
+  if (is_busy_state(state)) {
+    RCLCPP_WARN(get_logger(), "Reject grasp goal: gripper is busy state=%u",
+                static_cast<unsigned>(state));
     return rclcpp_action::GoalResponse::REJECT;
   }
 
-  if (goal->target_force_grams <= 0.0f || goal->timeout_sec <= 0.0f) {
+  if (state == static_cast<uint8_t>(State::FAULT)) {
+    RCLCPP_WARN(get_logger(), "Reject grasp goal: gripper is in FAULT state");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
+  if (state == static_cast<uint8_t>(State::GRASPING) ||
+      state == static_cast<uint8_t>(State::ADMITTANCE_CTRL) ||
+      state == static_cast<uint8_t>(State::APPROACHING)) {
+    RCLCPP_WARN(get_logger(),
+                "Reject grasp goal: gripper busy/incompatible state=%u",
+                static_cast<unsigned>(state));
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
+  if (goal->target_force_grams <= 0.0f) {
+    RCLCPP_WARN(get_logger(),
+                "Reject grasp goal: target_force_grams must be > 0 (got %.3f)",
+                goal->target_force_grams);
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
+  if (goal->tolerance_grams < 0.0f) {
+    RCLCPP_WARN(get_logger(),
+                "Reject grasp goal: tolerance_grams must be >= 0 (got %.3f)",
+                goal->tolerance_grams);
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
+  if (goal->settle_time_sec < 0.0f) {
+    RCLCPP_WARN(get_logger(),
+                "Reject grasp goal: settle_time_sec must be >= 0 (got %.3f)",
+                goal->settle_time_sec);
     return rclcpp_action::GoalResponse::REJECT;
   }
 
@@ -532,17 +611,39 @@ void GripperROSBridge::execute_grasp(
     return;
   }
 
-  if (!send(CAN_ID_CMD, {CMD_SET_STATE, static_cast<uint8_t>(State::APPROACHING)})) {
+  std::string verify_error;
+  if (!verify_target_force_readback(
+          goal->target_force_grams, kDefaultReadbackTimeoutSec,
+          kDefaultForceToleranceGrams,
+          "Readback timeout while verifying target force",
+          "Target force readback mismatch (>1.0g)", verify_error)) {
     auto result = std::make_shared<GraspAction::Result>();
     result->success = false;
-    result->message = "TX failed while commanding APPROACHING";
+    result->message = verify_error;
+    gh->abort(result);
+    return;
+  }
+
+  const uint8_t target_state = goal->use_admittance
+                                   ? static_cast<uint8_t>(State::ADMITTANCE_CTRL)
+                                   : static_cast<uint8_t>(State::APPROACHING);
+
+  if (!send(CAN_ID_CMD, {CMD_SET_STATE, target_state})) {
+    auto result = std::make_shared<GraspAction::Result>();
+    result->success = false;
+    result->message = "TX failed while commanding grasp state";
     gh->abort(result);
     return;
   }
 
   auto feedback = std::make_shared<GraspAction::Feedback>();
-  const auto deadline = now() + rclcpp::Duration::from_seconds(goal->timeout_sec);
   rclcpp::Rate rate(20);
+
+  const float tolerance = goal->tolerance_grams;
+  const float settle_time_sec = goal->settle_time_sec;
+  std::optional<std::chrono::steady_clock::time_point> settle_start;
+
+  const auto timeout_deadline = make_timeout_deadline(goal->timeout_sec);
 
   while (rclcpp::ok() && !shutting_down_.load()) {
     if (gh->is_canceling()) {
@@ -560,15 +661,31 @@ void GripperROSBridge::execute_grasp(
     feedback->current_state = status.state;
     gh->publish_feedback(feedback);
 
-    if (status.state == static_cast<uint8_t>(State::GRASPING) &&
-        std::abs(feedback->force_error_grams) < 10.0f) {
-      auto result = std::make_shared<GraspAction::Result>();
-      result->success = true;
-      result->final_state = status.state;
-      result->final_avg_force_grams = status.avg_grams;
-      result->message = "Force settled";
-      gh->succeed(result);
-      return;
+    const bool settled_state =
+        status.state == static_cast<uint8_t>(State::GRASPING) ||
+        status.state == static_cast<uint8_t>(State::ADMITTANCE_CTRL);
+    const bool within_tolerance = std::abs(feedback->force_error_grams) <= tolerance;
+
+    if (settled_state && within_tolerance) {
+      if (!settle_start.has_value()) {
+        settle_start = std::chrono::steady_clock::now();
+      }
+
+      const double held_sec =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                        *settle_start)
+              .count();
+      if (settle_time_sec <= 0.0f || held_sec >= settle_time_sec) {
+        auto result = std::make_shared<GraspAction::Result>();
+        result->success = true;
+        result->final_state = status.state;
+        result->final_avg_force_grams = status.avg_grams;
+        result->message = "Force settled";
+        gh->succeed(result);
+        return;
+      }
+    } else {
+      settle_start.reset();
     }
 
     if (status.state == static_cast<uint8_t>(State::ABORTED) ||
@@ -581,7 +698,7 @@ void GripperROSBridge::execute_grasp(
       return;
     }
 
-    if (now() > deadline) {
+    if (deadline_reached(timeout_deadline)) {
       (void)send(CAN_ID_CMD, {CMD_SET_STATE, static_cast<uint8_t>(State::OPENING)});
       auto result = std::make_shared<GraspAction::Result>();
       result->success = false;
@@ -604,9 +721,18 @@ void GripperROSBridge::execute_grasp(
 rclcpp_action::GoalResponse GripperROSBridge::handle_open_goal(
     const rclcpp_action::GoalUUID&,
     std::shared_ptr<const OpenAction::Goal>) {
-  if (get_last_state() == static_cast<uint8_t>(State::FAULT)) {
+  const auto state = get_last_state();
+  if (state == static_cast<uint8_t>(State::FAULT)) {
+    RCLCPP_WARN(get_logger(), "Reject open goal: gripper is in FAULT state");
     return rclcpp_action::GoalResponse::REJECT;
   }
+
+  if (is_busy_state(state)) {
+    RCLCPP_WARN(get_logger(), "Reject open goal: gripper is busy state=%u",
+                static_cast<unsigned>(state));
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
@@ -616,6 +742,7 @@ void GripperROSBridge::execute_open(
   if (!send(CAN_ID_CMD, {CMD_SET_STATE, static_cast<uint8_t>(State::OPENING)})) {
     auto result = std::make_shared<OpenAction::Result>();
     result->success = false;
+    result->message = "TX failed while commanding OPENING";
     gh->abort(result);
     return;
   }
@@ -623,19 +750,31 @@ void GripperROSBridge::execute_open(
   if (!goal->wait_for_completion) {
     auto result = std::make_shared<OpenAction::Result>();
     result->success = true;
+    result->message = "Open command sent";
     gh->succeed(result);
     return;
   }
 
   auto feedback = std::make_shared<OpenAction::Feedback>();
   rclcpp::Rate rate(20);
-  const auto deadline = now() + rclcpp::Duration::from_seconds(10.0);
+
+  const double timeout_param = get_parameter("open_timeout_sec").as_double();
+  const auto timeout_deadline = make_timeout_deadline(timeout_param);
 
   while (rclcpp::ok() && !shutting_down_.load()) {
     if (gh->is_canceling()) {
       auto result = std::make_shared<OpenAction::Result>();
       result->success = false;
+      result->message = "Cancelled";
       gh->canceled(result);
+      return;
+    }
+
+    if (get_last_state() == static_cast<uint8_t>(State::FAULT)) {
+      auto result = std::make_shared<OpenAction::Result>();
+      result->success = false;
+      result->message = "Faulted while opening";
+      gh->abort(result);
       return;
     }
 
@@ -649,13 +788,15 @@ void GripperROSBridge::execute_open(
       auto result = std::make_shared<OpenAction::Result>();
       result->success = true;
       result->final_position_rad = motor.position_rad;
+      result->message = "Open complete";
       gh->succeed(result);
       return;
     }
 
-    if (now() > deadline) {
+    if (deadline_reached(timeout_deadline)) {
       auto result = std::make_shared<OpenAction::Result>();
       result->success = false;
+      result->message = "Timeout";
       gh->abort(result);
       return;
     }
@@ -666,6 +807,7 @@ void GripperROSBridge::execute_open(
   if (gh->is_active()) {
     auto result = std::make_shared<OpenAction::Result>();
     result->success = false;
+    result->message = "Node shutting down";
     gh->abort(result);
   }
 }
@@ -673,6 +815,24 @@ void GripperROSBridge::execute_open(
 rclcpp_action::GoalResponse GripperROSBridge::handle_calib_goal(
     const rclcpp_action::GoalUUID&,
     std::shared_ptr<const CalibAction::Goal>) {
+  const auto state = get_last_state();
+
+  if (state == static_cast<uint8_t>(State::FAULT)) {
+    RCLCPP_WARN(get_logger(), "Reject calibrate goal: gripper is in FAULT state");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
+  if (state == static_cast<uint8_t>(State::GRASPING)) {
+    RCLCPP_WARN(get_logger(), "Reject calibrate goal: gripper is in GRASPING state");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
+  if (is_busy_state(state)) {
+    RCLCPP_WARN(get_logger(), "Reject calibrate goal: gripper is busy state=%u",
+                static_cast<unsigned>(state));
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
@@ -702,7 +862,9 @@ void GripperROSBridge::execute_calib(
   }
 
   rclcpp::Rate rate(10);
-  const auto deadline = now() + rclcpp::Duration::from_seconds(30.0);
+
+  const double timeout_param = get_parameter("calib_timeout_sec").as_double();
+  const auto timeout_deadline = make_timeout_deadline(timeout_param);
 
   while (rclcpp::ok() && !shutting_down_.load()) {
     if (gh->is_canceling()) {
@@ -716,13 +878,20 @@ void GripperROSBridge::execute_calib(
 
     const auto status = get_last_status();
 
-    if (status.state == static_cast<uint8_t>(State::SAVING_FLASH) ||
-        status.state == static_cast<uint8_t>(State::IDLE)) {
-      auto thresh = request_param_sync(14);
+    if (status.state == static_cast<uint8_t>(State::IDLE) ||
+        status.state == static_cast<uint8_t>(State::OPENING)) {
+      auto thresh = request_param_sync(kContactThresholdParamId);
+      auto pc3_zero = request_param_sync(kPc3ZeroParamId);
+      auto pc2_zero = request_param_sync(kPc2ZeroParamId);
+
       auto result = std::make_shared<CalibAction::Result>();
       result->success = true;
       result->contact_threshold_result = thresh.value_or(0.0f);
-      result->message = "Calibration complete";
+      result->pc3_zero_adc = pc3_zero.value_or(0.0f);
+      result->pc2_zero_adc = pc2_zero.value_or(0.0f);
+      result->message = (thresh.has_value() && pc3_zero.has_value() && pc2_zero.has_value())
+                            ? "Calibration complete"
+                            : "Calibration complete (parameter readback incomplete)";
       gh->succeed(result);
       return;
     }
@@ -735,10 +904,10 @@ void GripperROSBridge::execute_calib(
       return;
     }
 
-    if (now() > deadline) {
+    if (deadline_reached(timeout_deadline)) {
       auto result = std::make_shared<CalibAction::Result>();
       result->success = false;
-      result->message = "Timeout (30s). Calibration did not complete";
+      result->message = "Timeout. Calibration did not complete";
       gh->abort(result);
       return;
     }
@@ -794,6 +963,27 @@ void GripperROSBridge::publish_diagnostics() {
 
   arr.status.push_back(status_msg);
   diag_pub_->publish(arr);
+}
+
+bool GripperROSBridge::verify_target_force_readback(
+    float requested_grams,
+    double timeout_s,
+    float tolerance_grams,
+    const std::string& timeout_message,
+    const std::string& mismatch_message,
+    std::string& error_message) {
+  auto confirmed = request_param_sync(kTargetForceParamId, timeout_s);
+  if (!confirmed) {
+    error_message = timeout_message;
+    return false;
+  }
+
+  if (std::abs(*confirmed - requested_grams) > tolerance_grams) {
+    error_message = mismatch_message;
+    return false;
+  }
+
+  return true;
 }
 
 std::optional<float> GripperROSBridge::request_param_sync(uint8_t id,
@@ -934,7 +1124,7 @@ float GripperROSBridge::get_config_field(const GripperConfig& c, uint8_t id) {
 int main(int argc, char* argv[]) {
   rclcpp::init(argc, argv);
 
-  rclcpp::executors::MultiThreadedExecutor exec;
+  rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions{}, 2);
   auto node = std::make_shared<GripperROSBridge>();
   exec.add_node(node);
   exec.spin();

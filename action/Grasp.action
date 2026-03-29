@@ -1,6 +1,9 @@
 # Goal
 float32 target_force_grams
-float32 timeout_sec
+float32 tolerance_grams      # Force error tolerance
+float32 settle_time_sec      # How long it must stay within tolerance
+float32 timeout_sec          # Set to <= 0 for infinite timeout
+bool    use_admittance       # True = ADMITTANCE_CTRL, False = APPROACHING
 ---
 # Result
 bool    success

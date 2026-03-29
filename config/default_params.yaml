@@ -4,3 +4,5 @@ gripper_ros_bridge:
     baudrate: 921600
     rx_timeout_ms: 500
     force_rate_limit_ms: 50
+    open_timeout_sec: 10.0
+    calib_timeout_sec: 30.0

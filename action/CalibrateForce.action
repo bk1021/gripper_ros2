@@ -1,9 +1,11 @@
 # Goal
-# No goal fields. Sending a goal starts calibration immediately.
+# No goal fields.
 ---
 # Result
 bool    success
 float32 contact_threshold_result
+float32 pc3_zero_adc
+float32 pc2_zero_adc
 string  message
 ---
 # Feedback
