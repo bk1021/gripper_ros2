@@ -1,0 +1,10 @@
+# Goal
+# No goal fields. Sending a goal starts calibration immediately.
+---
+# Result
+bool    success
+float32 contact_threshold_result
+string  message
+---
+# Feedback
+# No feedback fields.

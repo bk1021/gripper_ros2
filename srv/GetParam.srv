@@ -1,0 +1,5 @@
+uint8 param_id
+---
+bool    success
+float32 value
+string  message

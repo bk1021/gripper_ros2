@@ -1,0 +1,4 @@
+std_msgs/Header header
+float32 position_rad
+float32 velocity_rad_s
+float32 torque_nm

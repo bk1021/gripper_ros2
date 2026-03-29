@@ -1,0 +1,14 @@
+# Goal
+float32 target_force_grams
+float32 timeout_sec
+---
+# Result
+bool    success
+uint8   final_state
+float32 final_avg_force_grams
+string  message
+---
+# Feedback
+float32 current_avg_force_grams
+float32 force_error_grams
+uint8   current_state

@@ -1,0 +1,6 @@
+gripper_ros_bridge:
+  ros__parameters:
+    port: "/dev/ttyUSB0"
+    baudrate: 921600
+    rx_timeout_ms: 500
+    force_rate_limit_ms: 50

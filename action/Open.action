@@ -1,0 +1,10 @@
+# Goal
+bool wait_for_completion
+---
+# Result
+bool    success
+float32 final_position_rad
+---
+# Feedback
+float32 current_position_rad
+float32 distance_to_open_rad
