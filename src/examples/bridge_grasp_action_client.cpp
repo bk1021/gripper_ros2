@@ -41,8 +41,8 @@ void print_usage() {
       << "  --tol <grams> (default 5)\n"
       << "  --settle <sec> (default 0.5)\n"
       << "  --timeout <sec> (default 8.0)\n"
-      << "  --admit <true|false> (default false)\n"
-  << "  --feedback <true|false> (default true)\n"
+      << "  --strategy <0|1> (default 0)\n"
+      << "  --feedback <true|false> (default true)\n"
       << "  --server-timeout <sec> (default 3.0)\n"
       << "  --result-timeout <sec> (default 20.0)\n";
 }
@@ -55,7 +55,7 @@ int main(int argc, char ** argv) {
   int tol = 5;
   double settle = 0.5;
   double timeout = 8.0;
-  bool use_admittance = false;
+  int control_strategy = 0;
   bool print_feedback = true;
   double server_timeout = 3.0;
   double result_timeout = 20.0;
@@ -72,8 +72,8 @@ int main(int argc, char ** argv) {
       settle = std::stod(argv[++i]);
     } else if (arg == "--timeout" && i + 1 < argc) {
       timeout = std::stod(argv[++i]);
-    } else if (arg == "--admit" && i + 1 < argc) {
-      use_admittance = parse_bool(argv[++i]);
+    } else if (arg == "--strategy" && i + 1 < argc) {
+      control_strategy = std::stoi(argv[++i]);
     } else if (arg == "--feedback" && i + 1 < argc) {
       print_feedback = parse_bool(argv[++i]);
     } else if (arg == "--server-timeout" && i + 1 < argc) {
@@ -102,7 +102,7 @@ int main(int argc, char ** argv) {
   goal.tolerance_grams = static_cast<float>(tol);
   goal.settle_time_sec = static_cast<float>(settle);
   goal.timeout_sec = static_cast<float>(timeout);
-  goal.use_admittance = use_admittance;
+  goal.control_strategy = static_cast<uint8_t>(control_strategy);
 
   rclcpp_action::Client<Grasp>::SendGoalOptions goal_options;
   goal_options.feedback_callback = [node, print_feedback](
@@ -113,7 +113,8 @@ int main(int argc, char ** argv) {
     }
     RCLCPP_INFO(
         node->get_logger(),
-        "[grasp feedback] avg_force=%.3f error=%.3f state=%u",
+        "[grasp feedback] target_force=%.3f avg_force=%.3f error=%.3f state=%u",
+        feedback->actual_target_force_grams,
         feedback->current_avg_force_grams,
         feedback->force_error_grams,
         static_cast<unsigned>(feedback->current_state));

@@ -22,3 +22,4 @@ float32 virtual_mass
 float32 virtual_damping
 float32 admit_max_vel
 float32 admit_kd
+float32 control_strategy

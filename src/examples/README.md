@@ -58,10 +58,10 @@ ros2 run gripper_ros2 bridge_force_topic_example_node -- --force 200.0 --seconds
 ros2 run gripper_ros2 bridge_open_action_client -- --wait true
 
 # 6) Grasp action (PID)
-ros2 run gripper_ros2 bridge_grasp_action_client -- --force 180 --tol 5 --settle 0.5 --timeout 8 --admit false
+ros2 run gripper_ros2 bridge_grasp_action_client -- --force 180 --tol 5 --settle 0.5 --timeout 8 --strategy 0
 
 # 7) Grasp action (admittance)
-ros2 run gripper_ros2 bridge_grasp_action_client -- --force 180 --tol 5 --settle 0.5 --timeout 8 --admit true
+ros2 run gripper_ros2 bridge_grasp_action_client -- --force 180 --tol 5 --settle 0.5 --timeout 8 --strategy 1
 
 # 8) Calibrate action
 ros2 run gripper_ros2 bridge_calibrate_action_client

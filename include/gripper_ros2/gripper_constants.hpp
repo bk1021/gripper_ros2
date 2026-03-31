@@ -9,14 +9,28 @@ enum class State : uint8_t {
   OPENING           = 1,
   APPROACHING       = 2,
   GRASPING          = 3,
-  ADMITTANCE_CTRL   = 4,
-  FAULT             = 5,
-  CALIBRATING_FORCE = 6,
-  MANUAL_TUNE       = 7,
-  ZEROING_MOTOR     = 8,
-  SAVING_FLASH      = 9,
-  ABORTED           = 10
+  FAULT             = 4,
+  CALIBRATING_FORCE = 5,
+  MANUAL_TUNE       = 6,
+  ZEROING_MOTOR     = 7,
+  SAVING_FLASH      = 8,
+  ABORTED           = 9
 };
+
+enum class ControlStrategy : uint8_t {
+  PID = 0,
+  ADMITTANCE = 1
+};
+
+inline bool is_valid_control_strategy(uint8_t raw) {
+  switch (static_cast<ControlStrategy>(raw)) {
+    case ControlStrategy::PID:
+    case ControlStrategy::ADMITTANCE:
+      return true;
+    default:
+      return false;
+  }
+}
 
 enum class Fault : uint8_t {
   NONE                    = 0,
@@ -29,7 +43,7 @@ enum class Fault : uint8_t {
   MOTOR_HARDWARE_ERROR    = 7
 };
 
-// Maps param_id (0-22) to config field name — mirrors CONFIG_PARAMS in Python
+// Maps param_id (0-23) to config field name — mirrors CONFIG_PARAMS in Python
 inline const char* param_name(uint8_t id) {
   static const char* names[] = {
     "kp","ki","kd","max_integral","max_torque",
@@ -38,9 +52,10 @@ inline const char* param_name(uint8_t id) {
     "deadband","lpf_alpha","contact_threshold",
     "pc3_zero_adc","pc2_zero_adc",
     "target_force_grams","telemetry_ms","virtual_mass",
-    "virtual_damping","admit_max_vel","admit_kd"
+    "virtual_damping","admit_max_vel","admit_kd",
+    "control_strategy"
   };
-  return (id < 23) ? names[id] : "unknown";
+  return (id < 24) ? names[id] : "unknown";
 }
 
 constexpr uint32_t CAN_ID_CMD        = 0x200;

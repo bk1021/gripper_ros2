@@ -144,7 +144,7 @@ GripperROSBridge::GripperROSBridge() : Node("gripper_ros_bridge") {
       });
 
   calib_as_ = rclcpp_action::create_server<CalibAction>(
-      this, "~/calibrate",
+      this, "~/calibrate_force",
       [this](const rclcpp_action::GoalUUID& uuid,
              std::shared_ptr<const CalibAction::Goal> goal) {
         return handle_calib_goal(uuid, goal);
@@ -299,7 +299,7 @@ void GripperROSBridge::parse_status(const uint8_t* d) {
   msg.pc3_grams = unpack_i16_be(d + 2) / 10.0f;
   msg.pc2_grams = unpack_i16_be(d + 4) / 10.0f;
   msg.avg_grams = (msg.pc3_grams + msg.pc2_grams) / 2.0f;
-  msg.pid_output = unpack_i16_be(d + 6) / 10000.0f;
+  msg.ctrl_output = unpack_i16_be(d + 6) / 1000.0f;
   status_pub_->publish(msg);
 
   std::lock_guard<std::mutex> lock(status_mutex_);
@@ -399,7 +399,7 @@ void GripperROSBridge::on_set_param(
     SetParamSrv::Response::SharedPtr res) {
   if (req->param_id > kConfigParamMaxId) {
     res->success = false;
-    res->message = "param_id out of range (0-22)";
+    res->message = "param_id out of range (0-23)";
     return;
   }
 
@@ -445,7 +445,7 @@ void GripperROSBridge::on_get_param(
     GetParamSrv::Response::SharedPtr res) {
   if (req->param_id > kConfigParamMaxId) {
     res->success = false;
-    res->message = "param_id out of range (0-22)";
+    res->message = "param_id out of range (0-23)";
     return;
   }
 
@@ -465,6 +465,7 @@ void GripperROSBridge::on_set_force_srv(
     SetFloat32Srv::Request::SharedPtr req,
     SetFloat32Srv::Response::SharedPtr res) {
   const int force = clamp_force_grams(req->value);
+  const float commanded_force_grams = static_cast<float>(force);
   if (!send(CAN_ID_CMD, {CMD_SET_FORCE, uint8_t(force >> 8), uint8_t(force)})) {
     res->success = false;
     res->message = "TX failed";
@@ -473,7 +474,8 @@ void GripperROSBridge::on_set_force_srv(
 
   std::string verify_error;
   if (!verify_target_force_readback(
-          req->value, kDefaultReadbackTimeoutSec, kDefaultForceToleranceGrams,
+          commanded_force_grams, kDefaultReadbackTimeoutSec,
+          kDefaultForceToleranceGrams,
           "Readback timeout. Target force unconfirmed",
           "Readback mismatch. Firmware target differs by >1.0g", verify_error)) {
     res->success = false;
@@ -566,7 +568,6 @@ rclcpp_action::GoalResponse GripperROSBridge::handle_grasp_goal(
   }
 
   if (state == static_cast<uint8_t>(State::GRASPING) ||
-      state == static_cast<uint8_t>(State::ADMITTANCE_CTRL) ||
       state == static_cast<uint8_t>(State::APPROACHING)) {
     RCLCPP_WARN(get_logger(),
                 "Reject grasp goal: gripper busy/incompatible state=%u",
@@ -595,6 +596,13 @@ rclcpp_action::GoalResponse GripperROSBridge::handle_grasp_goal(
     return rclcpp_action::GoalResponse::REJECT;
   }
 
+  if (!gripper::is_valid_control_strategy(goal->control_strategy)) {
+    RCLCPP_WARN(get_logger(),
+                "Reject grasp goal: unsupported control_strategy=%u",
+                static_cast<unsigned>(goal->control_strategy));
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
@@ -603,6 +611,7 @@ void GripperROSBridge::execute_grasp(
   const auto goal = gh->get_goal();
 
   const int force = clamp_force_grams(goal->target_force_grams);
+  const float commanded_force_grams = static_cast<float>(force);
   if (!send(CAN_ID_CMD, {CMD_SET_FORCE, uint8_t(force >> 8), uint8_t(force)})) {
     auto result = std::make_shared<GraspAction::Result>();
     result->success = false;
@@ -613,7 +622,7 @@ void GripperROSBridge::execute_grasp(
 
   std::string verify_error;
   if (!verify_target_force_readback(
-          goal->target_force_grams, kDefaultReadbackTimeoutSec,
+          commanded_force_grams, kDefaultReadbackTimeoutSec,
           kDefaultForceToleranceGrams,
           "Readback timeout while verifying target force",
           "Target force readback mismatch (>1.0g)", verify_error)) {
@@ -624,11 +633,21 @@ void GripperROSBridge::execute_grasp(
     return;
   }
 
-  const uint8_t target_state = goal->use_admittance
-                                   ? static_cast<uint8_t>(State::ADMITTANCE_CTRL)
-                                   : static_cast<uint8_t>(State::APPROACHING);
+  float strategy_val = static_cast<float>(goal->control_strategy);
+  const auto strategy_bytes = pack_float_be(strategy_val);
+  
+  if (!send(CAN_ID_CMD, {CMD_SET_PARAM, 23, strategy_bytes[0], strategy_bytes[1], strategy_bytes[2], strategy_bytes[3]})) {
+    auto result = std::make_shared<GraspAction::Result>();
+    result->success = false;
+    result->message = "TX failed while setting control strategy";
+    gh->abort(result);
+    return;
+  }
 
-  if (!send(CAN_ID_CMD, {CMD_SET_STATE, target_state})) {
+  // Brief delay to ensure STM32 processes the configuration before state change
+  std::this_thread::sleep_for(20ms);
+
+  if (!send(CAN_ID_CMD, {CMD_SET_STATE, static_cast<uint8_t>(State::APPROACHING)})) {
     auto result = std::make_shared<GraspAction::Result>();
     result->success = false;
     result->message = "TX failed while commanding grasp state";
@@ -656,14 +675,13 @@ void GripperROSBridge::execute_grasp(
     }
 
     const auto status = get_last_status();
+    feedback->actual_target_force_grams = commanded_force_grams;
     feedback->current_avg_force_grams = status.avg_grams;
-    feedback->force_error_grams = goal->target_force_grams - status.avg_grams;
+    feedback->force_error_grams = commanded_force_grams - status.avg_grams;
     feedback->current_state = status.state;
     gh->publish_feedback(feedback);
 
-    const bool settled_state =
-        status.state == static_cast<uint8_t>(State::GRASPING) ||
-        status.state == static_cast<uint8_t>(State::ADMITTANCE_CTRL);
+    const bool settled_state = status.state == static_cast<uint8_t>(State::GRASPING);
     const bool within_tolerance = std::abs(feedback->force_error_grams) <= tolerance;
 
     if (settled_state && within_tolerance) {
@@ -1088,6 +1106,7 @@ void GripperROSBridge::set_config_field(GripperConfig& c, uint8_t id, float v) {
     case 20: c.virtual_damping = v;    break;
     case 21: c.admit_max_vel = v;      break;
     case 22: c.admit_kd = v;           break;
+    case 23: c.control_strategy = v;   break;
     default: break;
   }
 }
@@ -1117,6 +1136,7 @@ float GripperROSBridge::get_config_field(const GripperConfig& c, uint8_t id) {
     case 20: return c.virtual_damping;
     case 21: return c.admit_max_vel;
     case 22: return c.admit_kd;
+    case 23: return c.control_strategy;
     default: return 0.0f;
   }
 }

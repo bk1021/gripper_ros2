@@ -53,16 +53,18 @@ bool SerialTransport::send_frame(uint32_t can_id, const std::vector<uint8_t>& pa
   // failed or send_frame is called before open()), which would silently
   // return EBADF and spam WARN logs from the node.
   if (fd_ < 0) return false;
+  if (payload.size() > 8) return false;
 
   uint8_t frame[17]{};
   frame[0] = 0xAA;
   frame[1] = 0x00; frame[2] = 0x00;
-  frame[3] = static_cast<uint8_t>(payload.size());
+  const uint8_t dlc = static_cast<uint8_t>(payload.size());
+  frame[3] = dlc;
   frame[4] = (can_id >> 24) & 0xFF;
   frame[5] = (can_id >> 16) & 0xFF;
   frame[6] = (can_id >>  8) & 0xFF;
   frame[7] =  can_id        & 0xFF;
-  for (size_t i = 0; i < payload.size() && i < 8; ++i)
+  for (size_t i = 0; i < dlc; ++i)
     frame[8 + i] = payload[i];
   frame[16] = 0x7A;
 
