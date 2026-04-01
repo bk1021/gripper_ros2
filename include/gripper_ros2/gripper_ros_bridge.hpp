@@ -119,7 +119,7 @@ private:
                                     const std::string& mismatch_message,
                                     std::string& error_message);
 
-  std::optional<float> request_param_sync(uint8_t id, double timeout_s = 0.5);
+    std::optional<float> request_param_sync(uint8_t id, double timeout_s = 0.5, int max_attempts = 3);
 
   GripperStatus get_last_status();
   GripperMotorState get_last_motor();

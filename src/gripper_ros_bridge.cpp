@@ -271,7 +271,7 @@ bool GripperROSBridge::refresh_live_config_from_firmware(double timeout_s) {
   bool all_ok = true;
   for (uint8_t id = 0; id <= kConfigParamMaxId; ++id) {
     std::this_thread::sleep_for(10ms);
-    auto val = request_param_sync(id, timeout_s);
+    auto val = request_param_sync(id, timeout_s, 3);
     if (!val) {
       RCLCPP_WARN(get_logger(), "Timeout fetching param %d (%s)", id, param_name(id));
       all_ok = false;
@@ -1005,7 +1005,8 @@ bool GripperROSBridge::verify_target_force_readback(
 }
 
 std::optional<float> GripperROSBridge::request_param_sync(uint8_t id,
-                                                          double timeout_s) {
+                                                          double timeout_s,
+                                                          int max_attempts) {
   if (shutting_down_.load()) {
     return std::nullopt;
   }
@@ -1014,57 +1015,78 @@ std::optional<float> GripperROSBridge::request_param_sync(uint8_t id,
     return std::nullopt;
   }
 
-  std::promise<float> prom;
-  auto future = prom.get_future();
-  bool inserted = false;
-
-  {
-    std::lock_guard<std::mutex> lock(promise_mutex_);
-    auto [it, ok] = pending_promises_.try_emplace(id, std::move(prom));
-    inserted = ok;
-    if (!ok) {
-      RCLCPP_WARN(get_logger(),
-                  "request_param_sync: param %d (%s) already pending; waiting on existing request",
-                  id, param_name(id));
-      (void)it;
-    }
+  if (max_attempts < 1) {
+    max_attempts = 1;
   }
 
-  if (inserted) {
-    if (!send(CAN_ID_CMD, {CMD_GET_PARAM, id})) {
+  for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+    std::promise<float> prom;
+    auto future = prom.get_future();
+    bool inserted = false;
+
+    {
+      std::lock_guard<std::mutex> lock(promise_mutex_);
+      auto [it, ok] = pending_promises_.try_emplace(id, std::move(prom));
+      inserted = ok;
+      if (!ok) {
+        RCLCPP_WARN(get_logger(),
+                    "request_param_sync: param %d (%s) already pending; waiting on existing request",
+                    id, param_name(id));
+        (void)it;
+      }
+    }
+
+    if (inserted) {
+      if (!send(CAN_ID_CMD, {CMD_GET_PARAM, id})) {
+        std::lock_guard<std::mutex> lock(promise_mutex_);
+        pending_promises_.erase(id);
+        return std::nullopt;
+      }
+
+      if (shutting_down_.load()) {
+        std::lock_guard<std::mutex> lock(promise_mutex_);
+        pending_promises_.erase(id);
+        return std::nullopt;
+      }
+
+      if (future.wait_for(std::chrono::duration<double>(timeout_s)) ==
+          std::future_status::ready) {
+        return future.get();
+      }
+
       std::lock_guard<std::mutex> lock(promise_mutex_);
       pending_promises_.erase(id);
-      return std::nullopt;
+      if (attempt < max_attempts) {
+        RCLCPP_WARN(get_logger(),
+                    "request_param_sync: timeout for param %d (%s), retry %d/%d",
+                    id, param_name(id), attempt, max_attempts);
+      }
+      continue;
+    }
+
+    std::unique_lock<std::mutex> lock(config_mutex_);
+    const uint64_t seq = config_update_seq_[id];
+    const bool updated = config_cv_.wait_for(
+        lock, std::chrono::duration<double>(timeout_s), [this, id, seq]() {
+          return shutting_down_.load() || config_update_seq_[id] > seq;
+        });
+
+    if (updated && !shutting_down_.load()) {
+      return get_config_field(live_config_, id);
     }
 
     if (shutting_down_.load()) {
-      std::lock_guard<std::mutex> lock(promise_mutex_);
-      pending_promises_.erase(id);
       return std::nullopt;
     }
 
-    if (future.wait_for(std::chrono::duration<double>(timeout_s)) ==
-        std::future_status::ready) {
-      return future.get();
+    if (attempt < max_attempts) {
+      RCLCPP_WARN(get_logger(),
+                  "request_param_sync: shared wait timeout for param %d (%s), retry %d/%d",
+                  id, param_name(id), attempt, max_attempts);
     }
-
-    std::lock_guard<std::mutex> lock(promise_mutex_);
-    pending_promises_.erase(id);
-    return std::nullopt;
   }
 
-  std::unique_lock<std::mutex> lock(config_mutex_);
-  const uint64_t seq = config_update_seq_[id];
-  const bool updated = config_cv_.wait_for(
-      lock, std::chrono::duration<double>(timeout_s), [this, id, seq]() {
-        return shutting_down_.load() || config_update_seq_[id] > seq;
-      });
-
-  if (!updated || shutting_down_.load()) {
-    return std::nullopt;
-  }
-
-  return get_config_field(live_config_, id);
+  return std::nullopt;
 }
 
 GripperROSBridge::GripperStatus GripperROSBridge::get_last_status() {
