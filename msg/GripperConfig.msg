@@ -23,3 +23,5 @@ float32 virtual_damping
 float32 admit_max_vel
 float32 admit_kd
 float32 control_strategy
+float32 contact_condition
+float32 calib_approach_limit

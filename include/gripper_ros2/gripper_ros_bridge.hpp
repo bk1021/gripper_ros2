@@ -49,8 +49,8 @@ private:
   using OpenAction = gripper_ros2::action::Open;
   using CalibAction = gripper_ros2::action::CalibrateForce;
 
-  static constexpr uint8_t kConfigParamMaxId = 23;
-  static constexpr size_t kConfigParamCount = 24;
+  static constexpr uint8_t kConfigParamMaxId = 25;
+  static constexpr size_t kConfigParamCount = 26;
   static constexpr uint8_t kOpenPosParamId = 5;
 
   static bool is_busy_state(uint8_t state);

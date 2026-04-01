@@ -53,9 +53,10 @@ inline const char* param_name(uint8_t id) {
     "pc3_zero_adc","pc2_zero_adc",
     "target_force_grams","telemetry_ms","virtual_mass",
     "virtual_damping","admit_max_vel","admit_kd",
-    "control_strategy"
+    "control_strategy", "contact_condition",
+    "calib_approach_limit"
   };
-  return (id < 24) ? names[id] : "unknown";
+  return (id < 26) ? names[id] : "unknown";
 }
 
 constexpr uint32_t CAN_ID_CMD        = 0x200;

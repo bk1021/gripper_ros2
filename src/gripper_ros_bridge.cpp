@@ -1083,30 +1083,32 @@ uint8_t GripperROSBridge::get_last_state() {
 
 void GripperROSBridge::set_config_field(GripperConfig& c, uint8_t id, float v) {
   switch (id) {
-    case 0:  c.kp = v;                 break;
-    case 1:  c.ki = v;                 break;
-    case 2:  c.kd = v;                 break;
-    case 3:  c.max_integral = v;       break;
-    case 4:  c.max_torque = v;         break;
-    case 5:  c.open_pos = v;           break;
-    case 6:  c.close_pos = v;          break;
-    case 7:  c.approach_limit = v;     break;
-    case 8:  c.open_kp = v;            break;
-    case 9:  c.open_kd = v;            break;
-    case 10: c.approach_kd = v;        break;
-    case 11: c.approach_vel = v;       break;
-    case 12: c.deadband = v;           break;
-    case 13: c.lpf_alpha = v;          break;
-    case 14: c.contact_threshold = v;  break;
-    case 15: c.pc3_zero_adc = v;       break;
-    case 16: c.pc2_zero_adc = v;       break;
-    case 17: c.target_force_grams = v; break;
-    case 18: c.telemetry_ms = v;       break;
-    case 19: c.virtual_mass = v;       break;
-    case 20: c.virtual_damping = v;    break;
-    case 21: c.admit_max_vel = v;      break;
-    case 22: c.admit_kd = v;           break;
-    case 23: c.control_strategy = v;   break;
+    case 0:  c.kp = v;                   break;
+    case 1:  c.ki = v;                   break;
+    case 2:  c.kd = v;                   break;
+    case 3:  c.max_integral = v;         break;
+    case 4:  c.max_torque = v;           break;
+    case 5:  c.open_pos = v;             break;
+    case 6:  c.close_pos = v;            break;
+    case 7:  c.approach_limit = v;       break;
+    case 8:  c.open_kp = v;              break;
+    case 9:  c.open_kd = v;              break;
+    case 10: c.approach_kd = v;          break;
+    case 11: c.approach_vel = v;         break;
+    case 12: c.deadband = v;             break;
+    case 13: c.lpf_alpha = v;            break;
+    case 14: c.contact_threshold = v;    break;
+    case 15: c.pc3_zero_adc = v;         break;
+    case 16: c.pc2_zero_adc = v;         break;
+    case 17: c.target_force_grams = v;   break;
+    case 18: c.telemetry_ms = v;         break;
+    case 19: c.virtual_mass = v;         break;
+    case 20: c.virtual_damping = v;      break;
+    case 21: c.admit_max_vel = v;        break;
+    case 22: c.admit_kd = v;             break;
+    case 23: c.control_strategy = v;     break;
+    case 24: c.contact_condition = v;    break;
+    case 25: c.calib_approach_limit = v; break;
     default: break;
   }
 }
@@ -1137,6 +1139,8 @@ float GripperROSBridge::get_config_field(const GripperConfig& c, uint8_t id) {
     case 21: return c.admit_max_vel;
     case 22: return c.admit_kd;
     case 23: return c.control_strategy;
+    case 24: return c.contact_condition;
+    case 25: return c.calib_approach_limit;
     default: return 0.0f;
   }
 }
